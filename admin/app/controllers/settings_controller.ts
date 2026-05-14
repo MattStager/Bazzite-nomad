@@ -62,6 +62,7 @@ export default class SettingsController {
     })
     const installedModels = await this.ollamaService.getModels().catch(() => [])
     const chatSuggestionsEnabled = await KVStore.getValue('chat.suggestionsEnabled')
+    const chatPersonasEnabled = (await KVStore.getValue('chat.personasEnabled')) ?? true
     const aiAssistantCustomName = await KVStore.getValue('ai.assistantCustomName')
     const remoteOllamaUrl = await KVStore.getValue('ai.remoteOllamaUrl')
     const ollamaFlashAttention = await KVStore.getValue('ai.ollamaFlashAttention')
@@ -71,6 +72,7 @@ export default class SettingsController {
         installedModels: installedModels || [],
         settings: {
           chatSuggestionsEnabled: chatSuggestionsEnabled ?? false,
+          chatPersonasEnabled,
           aiAssistantCustomName: aiAssistantCustomName ?? '',
           remoteOllamaUrl: remoteOllamaUrl ?? '',
           ollamaFlashAttention: ollamaFlashAttention ?? true,

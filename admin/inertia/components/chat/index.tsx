@@ -18,6 +18,7 @@ interface ChatProps {
   onClose?: () => void
   suggestionsEnabled?: boolean
   streamingEnabled?: boolean
+  personasEnabled?: boolean
 }
 
 export default function Chat({
@@ -26,6 +27,7 @@ export default function Chat({
   onClose,
   suggestionsEnabled = false,
   streamingEnabled = true,
+  personasEnabled = true,
 }: ChatProps) {
   const queryClient = useQueryClient()
   const { openModal, closeAllModals } = useModals()
@@ -409,31 +411,33 @@ export default function Chat({
                 {remoteStatus?.connected === false ? 'Remote Disconnected' : 'Remote Connected'}
               </span>
             )}
-            <div className="flex items-center gap-2">
-              <label htmlFor="persona-select" className="text-sm text-text-secondary">
-                Persona:
-              </label>
-              <select
-                id="persona-select"
-                value={selectedPersona}
-                onChange={(e) => handlePersonaChange(e.target.value as PersonaKey)}
-                title={personas.find((p) => p.key === selectedPersona)?.description ?? ''}
-                disabled={personas.length === 0}
-                className="px-3 py-1.5 border border-border-default rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-desert-green focus:border-transparent bg-surface-primary"
-              >
-                {personas.map((p) => (
-                  <option key={p.key} value={p.key} title={p.description}>
-                    {p.label}
-                  </option>
-                ))}
-              </select>
-              <a
-                href="/personas"
-                className="text-xs text-text-muted hover:text-text-primary underline whitespace-nowrap"
-              >
-                Manage…
-              </a>
-            </div>
+            {personasEnabled && (
+              <div className="flex items-center gap-2">
+                <label htmlFor="persona-select" className="text-sm text-text-secondary">
+                  Persona:
+                </label>
+                <select
+                  id="persona-select"
+                  value={selectedPersona}
+                  onChange={(e) => handlePersonaChange(e.target.value as PersonaKey)}
+                  title={personas.find((p) => p.key === selectedPersona)?.description ?? ''}
+                  disabled={personas.length === 0}
+                  className="px-3 py-1.5 border border-border-default rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-desert-green focus:border-transparent bg-surface-primary"
+                >
+                  {personas.map((p) => (
+                    <option key={p.key} value={p.key} title={p.description}>
+                      {p.label}
+                    </option>
+                  ))}
+                </select>
+                <a
+                  href="/personas"
+                  className="text-xs text-text-muted hover:text-text-primary underline whitespace-nowrap"
+                >
+                  Manage…
+                </a>
+              </div>
+            )}
             <div className="flex items-center gap-2">
               <label htmlFor="model-select" className="text-sm text-text-secondary">
                 Model:
