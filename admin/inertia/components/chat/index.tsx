@@ -6,10 +6,10 @@ import StyledModal from '../StyledModal'
 import api from '~/lib/api'
 import { formatBytes } from '~/lib/util'
 import { useModals } from '~/context/ModalContext'
-import { ChatMessage } from '../../../types/chat'
+import { ChatMessage, PersonaKey } from '../../../types/chat'
 import classNames from '~/lib/classNames'
 import { IconX } from '@tabler/icons-react'
-import { DEFAULT_QUERY_REWRITE_MODEL } from '../../../constants/ollama'
+import { DEFAULT_QUERY_REWRITE_MODEL, DEFAULT_PERSONA } from '../../../constants/ollama'
 import { useSystemSetting } from '~/hooks/useSystemSetting'
 
 interface ChatProps {
@@ -32,8 +32,17 @@ export default function Chat({
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null)
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [selectedModel, setSelectedModel] = useState<string>('')
+  const [selectedPersona, setSelectedPersona] = useState<PersonaKey>(DEFAULT_PERSONA)
   const [isStreamingResponse, setIsStreamingResponse] = useState(false)
   const streamAbortRef = useRef<AbortController | null>(null)
+
+  const { data: personasData } = useQuery({
+    queryKey: ['personas'],
+    queryFn: () => api.getPersonas(),
+    enabled,
+    staleTime: Infinity,
+  })
+  const personas = personasData?.personas ?? []
 
   // Fetch all sessions
   const { data: sessions = [] } = useQuery({
@@ -154,7 +163,8 @@ export default function Chat({
     // Just clear the active session and messages - don't create a session yet
     setActiveSessionId(null)
     setMessages([])
-  }, [])
+    setSelectedPersona(personasData?.default ?? DEFAULT_PERSONA)
+  }, [personasData])
 
   const handleClearHistory = useCallback(() => {
     openModal(
@@ -201,8 +211,24 @@ export default function Chat({
       if (sessionData?.model) {
         setSelectedModel(sessionData.model)
       }
+      if (sessionData?.persona) {
+        setSelectedPersona(sessionData.persona)
+      }
     },
     [installedModels, queryClient]
+  )
+
+  const handlePersonaChange = useCallback(
+    async (persona: PersonaKey) => {
+      setSelectedPersona(persona)
+      // Persist immediately if a session already exists; otherwise the
+      // selection is applied when the session is created on first message.
+      if (activeSessionId) {
+        await api.updateChatSession(activeSessionId, { persona })
+        queryClient.invalidateQueries({ queryKey: ['chatSessions'] })
+      }
+    },
+    [activeSessionId, queryClient]
   )
 
   const handleSendMessage = useCallback(
@@ -211,7 +237,7 @@ export default function Chat({
 
       // Create a new session if none exists
       if (!sessionId) {
-        const newSession = await api.createChatSession('New Chat', selectedModel)
+        const newSession = await api.createChatSession('New Chat', selectedModel, selectedPersona)
         if (newSession) {
           sessionId = newSession.id
           setActiveSessionId(sessionId)
@@ -347,7 +373,7 @@ export default function Chat({
         })
       }
     },
-    [activeSessionId, messages, selectedModel, chatMutation, queryClient, streamingEnabled]
+    [activeSessionId, messages, selectedModel, selectedPersona, chatMutation, queryClient, streamingEnabled]
   )
 
   return (
@@ -383,6 +409,31 @@ export default function Chat({
                 {remoteStatus?.connected === false ? 'Remote Disconnected' : 'Remote Connected'}
               </span>
             )}
+            <div className="flex items-center gap-2">
+              <label htmlFor="persona-select" className="text-sm text-text-secondary">
+                Persona:
+              </label>
+              <select
+                id="persona-select"
+                value={selectedPersona}
+                onChange={(e) => handlePersonaChange(e.target.value as PersonaKey)}
+                title={personas.find((p) => p.key === selectedPersona)?.description ?? ''}
+                disabled={personas.length === 0}
+                className="px-3 py-1.5 border border-border-default rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-desert-green focus:border-transparent bg-surface-primary"
+              >
+                {personas.map((p) => (
+                  <option key={p.key} value={p.key} title={p.description}>
+                    {p.label}
+                  </option>
+                ))}
+              </select>
+              <a
+                href="/personas"
+                className="text-xs text-text-muted hover:text-text-primary underline whitespace-nowrap"
+              >
+                Manage…
+              </a>
+            </div>
             <div className="flex items-center gap-2">
               <label htmlFor="model-select" className="text-sm text-text-secondary">
                 Model:

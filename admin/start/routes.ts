@@ -14,6 +14,7 @@ import EasySetupController from '#controllers/easy_setup_controller'
 import HomeController from '#controllers/home_controller'
 import MapsController from '#controllers/maps_controller'
 import OllamaController from '#controllers/ollama_controller'
+import PersonasController from '#controllers/personas_controller'
 import RagController from '#controllers/rag_controller'
 import SettingsController from '#controllers/settings_controller'
 import SystemController from '#controllers/system_controller'
@@ -136,6 +137,18 @@ router
   .prefix('/api/chat/sessions')
 
 router.get('/api/chat/suggestions', [ChatsController, 'suggestions'])
+router.get('/api/chat/personas', [ChatsController, 'listPersonas'])
+
+router
+  .group(() => {
+    router.get('/', [PersonasController, 'index'])
+    router.get('/:key', [PersonasController, 'show'])
+    router.put('/:key', [PersonasController, 'update'])
+    router.delete('/:key/override', [PersonasController, 'reset'])
+  })
+  .prefix('/api/personas')
+
+router.get('/personas', [PersonasController, 'inertia']).as('personas.inertia')
 
 router
   .group(() => {
