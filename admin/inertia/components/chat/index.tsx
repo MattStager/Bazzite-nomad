@@ -430,12 +430,6 @@ export default function Chat({
                     </option>
                   ))}
                 </select>
-                <a
-                  href="/personas"
-                  className="text-xs text-text-muted hover:text-text-primary underline whitespace-nowrap"
-                >
-                  Manage…
-                </a>
               </div>
             )}
             <div className="flex items-center gap-2">

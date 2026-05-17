@@ -11,7 +11,7 @@ import { chatSchema, getAvailableModelsSchema } from '#validators/ollama'
 import { inject } from '@adonisjs/core'
 import type { HttpContext } from '@adonisjs/core/http'
 import { DEFAULT_PERSONA, RAG_CONTEXT_LIMITS, SYSTEM_PROMPTS } from '../../constants/ollama.js'
-import { stripLatex } from '../../shared/strip_latex.js'
+import { cleanChatOutput } from '../../shared/strip_latex.js'
 import { SERVICE_NAMES } from '../../constants/service_names.js'
 import logger from '@adonisjs/core/services/logger'
 type Message = { role: 'system' | 'user' | 'assistant'; content: string }
@@ -55,25 +55,47 @@ export default class OllamaController {
       // (default), inject the chat session's persona prompt (merged with any
       // user overrides). When false, fall back to the original upstream
       // SYSTEM_PROMPTS.default so chat behaves exactly like pre-persona NOMAD.
+      //
+      // First-turn detection: if the conversation has only one user message
+      // (i.e. this is the user's opening message), and the persona has
+      // few-shot examples, inject the examples as real user/assistant pairs
+      // between the system message and the user input. This lets the model
+      // pattern-match the persona's voice instead of just being told about
+      // it. Subsequent turns skip examples — the conversation has its own
+      // context by then.
       const hasSystemMessage = reqData.messages.some((msg) => msg.role === 'system')
       if (!hasSystemMessage) {
         const personasEnabled = (await KVStore.getValue('chat.personasEnabled')) ?? true
 
         let systemPromptText: string
+        let examples: ReadonlyArray<{ user: string; assistant: string }> = []
         if (personasEnabled) {
           let personaKey: string = DEFAULT_PERSONA
           if (reqData.sessionId) {
             const session = await ChatSession.find(reqData.sessionId)
             if (session) personaKey = session.persona
           }
-          systemPromptText = await this.personaService.getSystemPrompt(personaKey)
-          logger.debug(`[OllamaController] Injecting persona system prompt: ${personaKey}`)
+          const result = await this.personaService.getSystemPromptAndExamples(personaKey)
+          systemPromptText = result.systemPrompt
+          examples = result.examples
+          logger.debug(`[OllamaController] Injecting persona system prompt: ${personaKey} (${examples.length} examples)`)
         } else {
           systemPromptText = SYSTEM_PROMPTS.default
           logger.debug('[OllamaController] Personas disabled, using SYSTEM_PROMPTS.default')
         }
 
-        reqData.messages.unshift({ role: 'system' as const, content: systemPromptText })
+        const userTurnCount = reqData.messages.filter((m) => m.role === 'user').length
+        const isFirstTurn = userTurnCount <= 1
+        const injected: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [
+          { role: 'system', content: systemPromptText },
+        ]
+        if (isFirstTurn && examples.length > 0) {
+          for (const ex of examples) {
+            injected.push({ role: 'user', content: ex.user })
+            injected.push({ role: 'assistant', content: ex.assistant })
+          }
+        }
+        reqData.messages.unshift(...injected)
       }
 
       // Query rewriting for better RAG retrieval with manageable context
@@ -175,7 +197,7 @@ export default class OllamaController {
         // before persistence so reloaded sessions render cleanly; the live
         // stream above is left alone since chunks may straddle delimiters.
         if (sessionId && fullContent) {
-          const cleanContent = stripLatex(fullContent)
+          const cleanContent = cleanChatOutput(fullContent)
           await this.chatService.addMessage(sessionId, 'assistant', cleanContent)
           const messageCount = await this.chatService.getMessageCount(sessionId)
           if (messageCount <= 2 && userContent) {
@@ -191,7 +213,7 @@ export default class OllamaController {
       const result = await this.ollamaService.chat({ ...ollamaRequest, think, numCtx })
 
       if (result?.message?.content) {
-        result.message.content = stripLatex(result.message.content)
+        result.message.content = cleanChatOutput(result.message.content)
       }
 
       if (sessionId && result?.message?.content) {
