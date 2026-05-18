@@ -5,6 +5,12 @@ export type EmbedJobWithProgress = {
   progress: number
   status: string
   error?: string
+  /** ms epoch of last completed batch; multi-batch ZIMs update this each batch. */
+  lastBatchAt?: number
+  /** ms epoch of first batch start; used as a fallback when lastBatchAt unset. */
+  startedAt?: number
+  /** Total chunks embedded across this job's batches so far. */
+  chunks?: number
 }
 
 export type ProcessAndEmbedFileResponse = {
@@ -34,4 +40,20 @@ export type RAGResult = {
 
 export type RerankedRAGResult = Omit<RAGResult, 'keywords'> & {
   finalScore: number
+}
+
+export type FileWarning =
+  | { kind: 'zero_chunks'; fileSizeBytes: number }
+  | { kind: 'partial_stall'; chunksEmbedded: number; chunksExpected: number }
+
+/**
+ * Result of computing per-file warnings. `ok: false` means the computation
+ * itself failed (Qdrant unreachable, DB outage, FS read error) — distinct from
+ * `ok: true` with an empty map, which means every scanned file is healthy.
+ * The frontend should surface a neutral "warnings unavailable" indicator on
+ * `!ok` rather than implying everything is fine.
+ */
+export type FileWarningsResult = {
+  ok: boolean
+  warnings: Record<string, FileWarning[]>
 }

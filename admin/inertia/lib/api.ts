@@ -5,7 +5,7 @@ import { FileEntry } from '../../types/files'
 import { CheckLatestVersionResult, SystemInformationResponse, SystemUpdateStatus } from '../../types/system'
 import { DownloadJobWithProgress, WikipediaState } from '../../types/downloads'
 import type { Country, CountryCode, CountryGroup, MapExtractPreflight } from '../../types/maps'
-import { EmbedJobWithProgress } from '../../types/rag'
+import { EmbedJobWithProgress, FileWarningsResult } from '../../types/rag'
 import type { CategoryWithStatus, CollectionWithStatus, ContentUpdateCheckResult, ResourceUpdateInfo } from '../../types/collections'
 import type { PersonaKey, PersonaSummary } from '../../types/chat'
 import { catchInternal } from './util'
@@ -544,6 +544,13 @@ class API {
     })()
   }
 
+  async getKbFileWarnings() {
+    return catchInternal(async () => {
+      const response = await this.client.get<FileWarningsResult>('/rag/file-warnings')
+      return response.data
+    })()
+  }
+
   async deleteRAGFile(source: string) {
     return catchInternal(async () => {
       const response = await this.client.delete<{ message: string }>('/rag/files', { data: { source } })
@@ -876,6 +883,52 @@ class API {
         filesScanned?: number
         filesQueued?: number
       }>('/rag/sync')
+      return response.data
+    })()
+  }
+
+  async reembedAllRAG() {
+    return catchInternal(async () => {
+      const response = await this.client.post<{
+        success: boolean
+        message: string
+        filesScanned?: number
+        filesQueued?: number
+      }>('/rag/re-embed-all')
+      return response.data
+    })()
+  }
+
+  async resetAndRebuildRAG() {
+    return catchInternal(async () => {
+      const response = await this.client.post<{
+        success: boolean
+        message: string
+        filesScanned?: number
+        filesQueued?: number
+      }>('/rag/reset-and-rebuild')
+      return response.data
+    })()
+  }
+
+  async estimateEmbeddingBatch(files: { filename: string; sizeBytes: number }[]) {
+    return catchInternal(async () => {
+      const response = await this.client.post<{
+        totalChunks: number
+        totalBytes: number
+        hasUnknown: boolean
+      }>('/rag/estimate-batch', { files })
+      return response.data
+    })()
+  }
+
+  async getKbPolicyPromptState() {
+    return catchInternal(async () => {
+      const response = await this.client.get<{
+        shouldPrompt: boolean
+        hasContent: boolean
+        totalFiles: number
+      }>('/rag/policy-prompt-state')
       return response.data
     })()
   }

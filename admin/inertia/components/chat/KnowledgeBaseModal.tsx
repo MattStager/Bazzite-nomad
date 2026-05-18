@@ -6,6 +6,10 @@ import StyledSectionHeader from '~/components/StyledSectionHeader'
 import StyledTable from '~/components/StyledTable'
 import { useNotifications } from '~/context/NotificationContext'
 import api from '~/lib/api'
+import {
+  groupAndSortKbFiles,
+  type KbFileGroup,
+} from '~/lib/kb_file_grouping'
 import { IconX } from '@tabler/icons-react'
 import { useModals } from '~/context/ModalContext'
 import StyledModal from '../StyledModal'
@@ -17,16 +21,13 @@ interface KnowledgeBaseModalProps {
   onClose: () => void
 }
 
-function sourceToDisplayName(source: string): string {
-  const parts = source.split(/[/\\]/)
-  return parts[parts.length - 1]
-}
-
 export default function KnowledgeBaseModal({ aiAssistantName = "AI Assistant", onClose }: KnowledgeBaseModalProps) {
   const { addNotification } = useNotifications()
   const [files, setFiles] = useState<File[]>([])
   const [isUploading, setIsUploading] = useState(false)
   const [confirmDeleteSource, setConfirmDeleteSource] = useState<string | null>(null)
+  const [bulkMode, setBulkMode] = useState<null | 'reembed' | 'reset'>(null)
+  const [resetTyped, setResetTyped] = useState('')
   const fileUploaderRef = useRef<React.ComponentRef<typeof FileUploader>>(null)
   const { openModal, closeModal } = useModals()
   const queryClient = useQueryClient()
@@ -48,6 +49,49 @@ export default function KnowledgeBaseModal({ aiAssistantName = "AI Assistant", o
     queryKey: ['storedFiles'],
     queryFn: () => api.getStoredRAGFiles(),
     select: (data) => data || [],
+  })
+
+  // Per-file conditional warnings (RFC #883 §6). `ok: false` means the
+  // computation itself failed (Qdrant/DB/FS) — distinct from `ok: true` with
+  // an empty map, which means everything is healthy. We surface the failure
+  // explicitly so a silent backend failure doesn't masquerade as health.
+  const { data: warningsResult } = useQuery({
+    queryKey: ['kbFileWarnings'],
+    queryFn: () => api.getKbFileWarnings(),
+    refetchInterval: 30_000,
+  })
+  const fileWarnings = warningsResult?.warnings ?? {}
+  const warningsUnavailable = warningsResult !== undefined && warningsResult.ok === false
+
+  // Global auto-index policy. KVStore returns `null` for an unset key, which
+  // we treat as 'Always' for backward compatibility with installs that predate
+  // this UI. The user can opt into Manual mode from the toggle below.
+  const { data: ingestPolicySetting } = useQuery({
+    queryKey: ['ingestPolicy'],
+    queryFn: () => api.getSetting('rag.defaultIngestPolicy'),
+  })
+  const ingestPolicy: 'Always' | 'Manual' =
+    ingestPolicySetting?.value === 'Manual' ? 'Manual' : 'Always'
+
+  const updateIngestPolicyMutation = useMutation({
+    mutationFn: (policy: 'Always' | 'Manual') =>
+      api.updateSetting('rag.defaultIngestPolicy', policy),
+    onSuccess: (_data, policy) => {
+      queryClient.invalidateQueries({ queryKey: ['ingestPolicy'] })
+      addNotification({
+        type: 'success',
+        message:
+          policy === 'Always'
+            ? 'New content will be auto-indexed for AI.'
+            : 'New content will wait for you to opt in.',
+      })
+    },
+    onError: (error: any) => {
+      addNotification({
+        type: 'error',
+        message: error?.message || 'Failed to update indexing policy.',
+      })
+    },
   })
 
   const uploadMutation = useMutation({
@@ -104,6 +148,44 @@ export default function KnowledgeBaseModal({ aiAssistantName = "AI Assistant", o
       })
     },
   })
+
+  const reembedMutation = useMutation({
+    mutationFn: () => api.reembedAllRAG(),
+    onSuccess: (data) => {
+      addNotification({
+        type: data?.success ? 'success' : 'error',
+        message: data?.message || 'Re-embed completed.',
+      })
+      queryClient.invalidateQueries({ queryKey: ['storedFiles'] })
+      queryClient.invalidateQueries({ queryKey: ['embed-jobs'] })
+      setBulkMode(null)
+      setResetTyped('')
+    },
+    onError: () => {
+      addNotification({ type: 'error', message: 'Failed to re-embed knowledge base.' })
+      setBulkMode(null)
+    },
+  })
+
+  const resetMutation = useMutation({
+    mutationFn: () => api.resetAndRebuildRAG(),
+    onSuccess: (data) => {
+      addNotification({
+        type: data?.success ? 'success' : 'error',
+        message: data?.message || 'Reset complete.',
+      })
+      queryClient.invalidateQueries({ queryKey: ['storedFiles'] })
+      queryClient.invalidateQueries({ queryKey: ['embed-jobs'] })
+      setBulkMode(null)
+      setResetTyped('')
+    },
+    onError: () => {
+      addNotification({ type: 'error', message: 'Failed to reset knowledge base.' })
+      setBulkMode(null)
+    },
+  })
+
+  const bulkBusy = reembedMutation.isPending || resetMutation.isPending
 
   const handleUpload = async () => {
     if (files.length === 0) return
@@ -268,6 +350,48 @@ export default function KnowledgeBaseModal({ aiAssistantName = "AI Assistant", o
               </div>
             </div>
           </div>
+          <div className="my-8 p-4 rounded-lg border border-border-subtle bg-surface-secondary">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="flex-1 min-w-[14rem]">
+                <p className="text-sm font-medium text-text-primary">
+                  Auto-index new content for AI?
+                </p>
+                <p className="text-xs text-text-muted mt-1">
+                  Indexed content typically uses 5–10× the original file size on disk.
+                  Changes apply to new content added after this setting changes.
+                </p>
+              </div>
+              <div
+                role="radiogroup"
+                aria-label="Ingest policy"
+                className="inline-flex rounded-md overflow-hidden border border-border-subtle"
+              >
+                {(['Always', 'Manual'] as const).map((option) => {
+                  const isActive = ingestPolicy === option
+                  return (
+                    <button
+                      key={option}
+                      type="button"
+                      role="radio"
+                      aria-checked={isActive}
+                      onClick={() =>
+                        !isActive && updateIngestPolicyMutation.mutate(option)
+                      }
+                      disabled={updateIngestPolicyMutation.isPending}
+                      className={`px-4 py-2 text-sm font-medium transition-colors ${
+                        isActive
+                          ? 'bg-desert-green text-white'
+                          : 'bg-surface-primary text-text-secondary hover:bg-surface-tertiary'
+                      } ${updateIngestPolicyMutation.isPending ? 'opacity-50 cursor-not-allowed' : ''}`}
+                    >
+                      {option}
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
+          </div>
+
           <div className="my-8">
             <div className="flex items-center justify-between mb-4">
               <StyledSectionHeader title="Processing Queue" className="!mb-0" />
@@ -286,19 +410,50 @@ export default function KnowledgeBaseModal({ aiAssistantName = "AI Assistant", o
           </div>
 
           <div className="my-12">
-            <div className='flex items-center justify-between mb-6'>
+            <div className='flex items-center justify-between mb-6 gap-2 flex-wrap'>
               <StyledSectionHeader title="Stored Knowledge Base Files" className='!mb-0' />
-              <StyledButton
-                variant="secondary"
-                size="md"
-                icon='IconRefresh'
-                onClick={handleConfirmSync}
-                disabled={syncMutation.isPending || isUploading || qdrantOffline}
-                loading={syncMutation.isPending || isUploading}
-              >
-                Sync Storage
-              </StyledButton>
+              <div className="flex items-center gap-2 flex-wrap">
+                <StyledButton
+                  variant="danger"
+                  size="md"
+                  icon='IconAlertTriangle'
+                  onClick={() => { setResetTyped(''); setBulkMode('reset') }}
+                  disabled={isUploading || qdrantOffline || bulkBusy}
+                  loading={resetMutation.isPending}
+                >
+                  Reset & Rebuild
+                </StyledButton>
+                <StyledButton
+                  variant="secondary"
+                  size="md"
+                  icon='IconRefreshAlert'
+                  onClick={() => setBulkMode('reembed')}
+                  disabled={isUploading || qdrantOffline || bulkBusy || storedFiles.length === 0}
+                  loading={reembedMutation.isPending}
+                >
+                  Re-embed All
+                </StyledButton>
+                <StyledButton
+                  variant="secondary"
+                  size="md"
+                  icon='IconRefresh'
+                  onClick={handleConfirmSync}
+                  disabled={syncMutation.isPending || isUploading || qdrantOffline || bulkBusy}
+                  loading={syncMutation.isPending || isUploading}
+                >
+                  Sync Storage
+                </StyledButton>
+
+              </div>
             </div>
+            {warningsUnavailable && (
+              <div className="mb-4 inline-flex items-center gap-2 text-xs text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800 rounded px-3 py-2">
+                <span aria-hidden="true">⚠</span>
+                <span>
+                  File warnings unavailable — couldn't read storage state. Retrying…
+                </span>
+              </div>
+            )}
             <StyledTable<{ source: string }>
               className="font-semibold"
               rowLines={true}
@@ -307,13 +462,54 @@ export default function KnowledgeBaseModal({ aiAssistantName = "AI Assistant", o
                   accessor: 'source',
                   title: 'File Name',
                   render(record) {
-                    return <span className="text-text-primary">{sourceToDisplayName(record.source)}</span>
+                    const warnings = fileWarnings[record.source] ?? []
+                    return (
+                      <div className="flex flex-col gap-1">
+                        <span className="text-text-primary">
+                          {sourceToDisplayName(record.source)}
+                        </span>
+                        {warnings.map((w, i) => (
+                          <span
+                            key={i}
+                            className="inline-flex items-center gap-1.5 self-start text-xs text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800 rounded px-2 py-0.5"
+                          >
+                            <span aria-hidden="true">⚠</span>
+                            {w.kind === 'zero_chunks' && (
+                              <span>
+                                Embedded 0 chunks — this file has no text content.
+                                AI Assistant cannot reference it.
+                              </span>
+                            )}
+                            {w.kind === 'partial_stall' && (
+                              <span>
+                                Only {w.chunksEmbedded.toLocaleString()} of est.{' '}
+                                {w.chunksExpected.toLocaleString()} chunks embedded —
+                                ingestion may have stalled.
+                              </span>
+                            )}
+                          </span>
+                        ))}
+                      </div>
+                    )
                   },
                 },
                 {
                   accessor: 'source',
                   title: '',
                   render(record) {
+                    // Admin docs are auto-discovered and managed by NOMAD itself —
+                    // deleting one would just be re-embedded on the next sync, so
+                    // we surface them as informational only and hide Delete.
+                    if (record.bucket === 'admin_docs') {
+                      return (
+                        <div className="flex justify-end">
+                          <span className="text-sm text-text-muted italic">
+                            Managed by NOMAD
+                          </span>
+                        </div>
+                      )
+                    }
+
                     const isConfirming = confirmDeleteSource === record.source
                     const isDeleting = deleteMutation.isPending && confirmDeleteSource === record.source
                     if (isConfirming) {
@@ -354,12 +550,107 @@ export default function KnowledgeBaseModal({ aiAssistantName = "AI Assistant", o
                   },
                 },
               ]}
-              data={storedFiles.map((source) => ({ source }))}
+              data={groupAndSortKbFiles(storedFiles)}
               loading={isLoadingFiles}
             />
           </div>
         </div>
       </div>
+
+      {bulkMode === 'reembed' && (
+        <StyledModal
+          title='Re-embed All Documents?'
+          open={true}
+          confirmText={reembedMutation.isPending ? 'Re-embedding…' : 'Re-embed All'}
+          cancelText='Cancel'
+          confirmVariant='primary'
+          confirmLoading={reembedMutation.isPending}
+          onConfirm={() => reembedMutation.mutate()}
+          onCancel={() => setBulkMode(null)}
+        >
+          <div className='text-text-primary text-sm space-y-3 text-left'>
+            <p>
+              This will re-process every document currently in your knowledge base — about
+              <strong> {storedFiles.length} file{storedFiles.length === 1 ? '' : 's'}</strong>.
+              For each file, NOMAD will delete the existing embeddings from Qdrant and queue a fresh
+              embedding job using the current chunking and embedding model.
+            </p>
+            <div className='rounded border border-border-subtle bg-surface-secondary p-3'>
+              <p className='font-semibold mb-1'>What this is for</p>
+              <p className='text-text-secondary'>
+                Use this when the embedding model or chunking logic has changed, or when you suspect
+                stored vectors are stale. Files on disk are <em>not</em> deleted, and any orphan
+                points whose source file is no longer present will be preserved untouched (see
+                <em> Reset &amp; Rebuild </em>if you want a fully clean slate).
+              </p>
+            </div>
+            <div className='rounded border border-amber-300 bg-amber-50 dark:bg-amber-950 dark:border-amber-800 p-3 text-amber-900 dark:text-amber-200'>
+              <p className='font-semibold mb-1'>Heads up</p>
+              <ul className='list-disc pl-5 space-y-1'>
+                <li>Embedding {storedFiles.length} file{storedFiles.length === 1 ? '' : 's'} may take a long time, especially for large PDFs or ZIM archives.</li>
+                <li>On systems without GPU acceleration, expect sustained high CPU usage for the duration.</li>
+                <li>Knowledge Base search results may be incomplete until every file finishes re-embedding.</li>
+                <li>If embed jobs are already in progress, this action will be refused — wait for the queue to drain first.</li>
+              </ul>
+            </div>
+          </div>
+        </StyledModal>
+      )}
+
+      {bulkMode === 'reset' && (
+        <StyledModal
+          title='Reset & Rebuild Knowledge Base?'
+          open={true}
+          confirmText={resetMutation.isPending ? 'Resetting…' : 'Wipe & Rebuild'}
+          cancelText='Cancel'
+          confirmVariant='danger'
+          confirmLoading={resetMutation.isPending}
+          onConfirm={() => {
+            if (resetTyped === 'RESET') resetMutation.mutate()
+          }}
+          onCancel={() => { setBulkMode(null); setResetTyped('') }}
+        >
+          <div className='text-text-primary text-sm space-y-3 text-left'>
+            <p>
+              This will <strong>permanently delete every point</strong> in the
+              <code> nomad_knowledge_base </code>Qdrant collection and rebuild from the
+              <strong> {storedFiles.length} file{storedFiles.length === 1 ? '' : 's'}</strong> currently
+              on disk. The collection is dropped, recreated, and every file is re-queued for embedding.
+            </p>
+            <div className='rounded border border-border-subtle bg-surface-secondary p-3'>
+              <p className='font-semibold mb-1'>How this differs from Re-embed All</p>
+              <ul className='list-disc pl-5 space-y-1 text-text-secondary'>
+                <li><strong>Re-embed All</strong> replaces vectors file-by-file. Any orphan points (vectors whose source file was deleted from disk at some point) are preserved.</li>
+                <li><strong>Reset &amp; Rebuild</strong> drops the entire collection. Orphan points are <strong>gone forever</strong>. Only files currently on disk will exist in Qdrant afterwards.</li>
+              </ul>
+            </div>
+            <div className='rounded border border-red-300 bg-red-50 dark:bg-red-950 dark:border-red-800 p-3 text-red-900 dark:text-red-200'>
+              <p className='font-semibold mb-1'>This action is destructive and cannot be undone</p>
+              <ul className='list-disc pl-5 space-y-1'>
+                <li>Knowledge Base search will be empty until embedding finishes (potentially hours on CPU-only systems).</li>
+                <li>For a few seconds during the reset, the Qdrant collection does not exist — any chat-with-RAG queries in that window may return a "collection not found" error. Avoid using chat until the rebuild has begun.</li>
+                <li>If embed jobs are already in progress, this action will be refused — wait for the queue to drain first.</li>
+              </ul>
+            </div>
+            <div>
+              <label className='block text-sm font-semibold mb-1'>
+                Type <code>RESET</code> to confirm:
+              </label>
+              <input
+                type='text'
+                value={resetTyped}
+                onChange={(e) => setResetTyped(e.target.value)}
+                placeholder='RESET'
+                autoFocus
+                className='w-full rounded border border-border-subtle bg-surface-primary px-3 py-2 text-text-primary focus:outline-none focus:ring-2 focus:ring-red-500'
+              />
+              {resetTyped.length > 0 && resetTyped !== 'RESET' && (
+                <p className='text-xs text-red-600 mt-1'>Type RESET exactly (uppercase, no spaces) to enable the confirm button.</p>
+              )}
+            </div>
+          </div>
+        </StyledModal>
+      )}
     </div>
   )
 }

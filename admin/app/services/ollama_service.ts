@@ -470,6 +470,18 @@ export class OllamaService {
   }
 
   /**
+   * Hard char cap per embed input, applied as a runtime safety net regardless of
+   * which backend path runs. The chunker in RagService caps at MAX_SAFE_TOKENS=1600
+   * (3200 chars at the conservative 2 chars/token estimate), but dense technical
+   * content has been observed to slip past on multi-batch ZIM ingestion (#881).
+   *
+   * 4000 chars ≈ 1000–2000 tokens depending on density, which keeps us comfortably
+   * under nomic-embed-text:v1.5's default 2048-token context even on the OpenAI-compat
+   * fallback path (which can't pass `truncate:true`/`num_ctx` to the model).
+   */
+  public static readonly EMBED_MAX_INPUT_CHARS = 4000
+
+  /**
    * Generate embeddings for the given input strings.
    * Tries the Ollama native /api/embed endpoint first, falls back to /v1/embeddings.
    */
@@ -477,6 +489,28 @@ export class OllamaService {
     await this._ensureDependencies()
     if (!this.baseUrl || !this.openai) {
       throw new Error('AI service is not initialized.')
+    }
+
+    // Runtime safety net (#881). The OpenAI-compat fallback has no equivalent of
+    // truncate:true, so a chunk that exceeds the model's loaded context_length
+    // (often 2048 for nomic-embed-text:v1.5) returns 400 and the chunk is silently
+    // dropped from Qdrant. Pre-capping at the input layer protects both paths.
+    const safeInput = input.map((s) =>
+      s.length > OllamaService.EMBED_MAX_INPUT_CHARS
+        ? s.slice(0, OllamaService.EMBED_MAX_INPUT_CHARS)
+        : s
+    )
+    const truncatedCount = input.reduce(
+      (n, s) => (s.length > OllamaService.EMBED_MAX_INPUT_CHARS ? n + 1 : n),
+      0
+    )
+    if (truncatedCount > 0) {
+      logger.debug(
+        '[OllamaService] embed: pre-capped %d/%d inputs at %d chars',
+        truncatedCount,
+        input.length,
+        OllamaService.EMBED_MAX_INPUT_CHARS
+      )
     }
 
     try {
@@ -491,7 +525,7 @@ export class OllamaService {
         `${this.baseUrl}/api/embed`,
         {
           model,
-          input,
+          input: safeInput,
           truncate: true,
           options: { num_ctx: 8192 },
         },
@@ -503,13 +537,60 @@ export class OllamaService {
         throw new Error('Invalid /api/embed response — missing embeddings array')
       }
       return { embeddings: response.data.embeddings }
-    } catch {
-      // Fall back to OpenAI-compatible /v1/embeddings
+    } catch (err) {
+      // Capture the original error so we know *why* we fell back. Earlier bare
+      // catches here masked recurring "input length exceeds context length"
+      // failures for months (#369, #670, #881) — without this log we have no
+      // signal that /api/embed is the broken path vs the fallback.
+      logger.warn(
+        '[OllamaService] /api/embed failed, falling back to /v1/embeddings: %s',
+        err instanceof Error ? err.message : String(err)
+      )
+      // Fall back to OpenAI-compatible /v1/embeddings.
       // Explicitly request float format — some backends (e.g. LM Studio) don't reliably
       // implement the base64 encoding the OpenAI SDK requests by default.
-      logger.info('[OllamaService] /api/embed unavailable, falling back to /v1/embeddings')
-      const results = await this.openai.embeddings.create({ model, input, encoding_format: 'float' })
+      const results = await this.openai.embeddings.create({
+        model,
+        input: safeInput,
+        encoding_format: 'float',
+      })
       return { embeddings: results.data.map((e) => e.embedding as number[]) }
+    }
+  }
+
+  /**
+   * Returns true if Ollama is currently running an embedding model with non-zero VRAM
+   * (i.e., GPU-offloaded). Returns false if the model is running CPU-only OR if it's
+   * not currently loaded OR if /api/ps is unreachable.
+   *
+   * Used by EmbedFileJob to pace continuation batches when the embedding model is
+   * CPU-bound — sustained 100% CPU on a multi-batch ZIM ingestion can starve other
+   * services (sshd, etc.) hard enough to require a power-cycle. AMD ROCm installs
+   * hit this today because Ollama's ROCm build doesn't accelerate nomic-bert; on
+   * NVIDIA, nomic-embed-text runs at 100% GPU and pacing is unnecessary.
+   *
+   * Only the Ollama-native endpoint is supported — backends that expose
+   * `/v1/embeddings` (LM Studio, llama.cpp) don't surface placement info.
+   */
+  public async isEmbeddingGpuAccelerated(): Promise<boolean> {
+    await this._ensureDependencies()
+    if (!this.baseUrl) return false
+
+    try {
+      const response = await axios.get(`${this.baseUrl}/api/ps`, { timeout: 5000 })
+      const models: Array<{ name?: string; size_vram?: number }> = response.data?.models ?? []
+      // Match any loaded model whose name signals it's an embedding model.
+      // nomic-embed-text, mxbai-embed-large, snowflake-arctic-embed, etc. all follow this convention.
+      return models.some(
+        (m) => m.name?.toLowerCase().includes('embed') && (m.size_vram ?? 0) > 0
+      )
+    } catch (err: any) {
+      // /api/ps unreachable (Ollama down, non-native backend, etc.) — fail closed: assume CPU,
+      // which means we'll pace. Better to over-pace than risk box-killing CPU saturation.
+      logger.warn(
+        `[OllamaService] Could not check embedding placement via /api/ps: ${err?.message ?? err}`
+      )
+      return false
     }
   }
 

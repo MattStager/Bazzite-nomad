@@ -4,6 +4,7 @@ export const KV_STORE_SCHEMA = {
   'chat.personasEnabled':       'boolean',
   'chat.lastModel':             'string',
   'rag.docsEmbedded':           'boolean',
+  'rag.defaultIngestPolicy':    'string',
   'system.updateAvailable':     'boolean',
   'system.latestVersion':       'string',
   'system.earlyAccess':         'boolean',
@@ -15,6 +16,8 @@ export const KV_STORE_SCHEMA = {
   'ai.ollamaFlashAttention':    'boolean',
   'ai.amdGpuAcceleration':      'boolean',
   'ai.amdHsaOverride':          'string',
+  'ai.autoFixGpuPassthrough':   'boolean',
+  'gpu.autoRemediatedAt':       'string',
 } as const
 
 type KVTagToType<T extends string> = T extends 'boolean' ? boolean : string
