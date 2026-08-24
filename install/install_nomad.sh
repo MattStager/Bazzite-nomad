@@ -598,6 +598,7 @@ get_local_ip() {
     exit 1
   fi
 }
+
 verify_gpu_setup() {
   # This function only displays GPU setup status and is completely non-blocking
   # It never exits or returns error codes - purely informational
