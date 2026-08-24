@@ -13,9 +13,9 @@
 </div>
 
 ---
-<div align="center">This is a fork of Project N.O.M.A.D. I created to try to install onto bazzite.</div>
----
-Project N.O.M.A.D. is a self-contained, offline-first knowledge and education server packed with critical tools, knowledge, and AI to keep you informed and empowered—anytime, anywhere.
+<div align="center">This is a fork of Project N.O.M.A.D. I created to try to install onto bazzite.</div></br>
+Project N.O.M.A.D. is a self-contained, offline-first knowledge and education server packed with critical tools, 
+knowledge, and AI to keep you informed and empowered—anytime, anywhere.
 ## Installation & Quickstart
 Project N.O.M.A.D. can be installed on any Debian-based operating system (we recommend Ubuntu). Installation is completely terminal-based, and all tools and resources are designed to be accessed through the browser, so there's no need for a desktop environment if you'd rather setup N.O.M.A.D. as a "server" and access it through other clients.
 
