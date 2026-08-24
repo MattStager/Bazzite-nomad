@@ -13,7 +13,8 @@
 </div>
 
 ---
-This is a fork of Project N.O.M.A.D. I created to try to install onto bazzite.
+<div align="center">This is a fork of Project N.O.M.A.D. I created to try to install onto bazzite.</div>
+
 Project N.O.M.A.D. is a self-contained, offline-first knowledge and education server packed with critical tools, knowledge, and AI to keep you informed and empowered—anytime, anywhere.
 
 ## Installation & Quickstart
